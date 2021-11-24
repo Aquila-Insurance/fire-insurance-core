@@ -19,7 +19,10 @@
     "hardhat": "^2.6.7"
   },
   "dependencies": {
+    "@turf/turf": "^6.5.0",
     "dotenv": "^10.0.0",
+    "firebase": "^9.4.0",
+    "moralis": "0.0.124",
     "shpjs": "^4.0.2"
   }
 }
