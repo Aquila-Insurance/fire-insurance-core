@@ -1,15 +1,17 @@
-//SPDX-License-Identifier: UNLICENSED
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.6.6;
 pragma experimental ABIEncoderV2;
 
-//import "@chainlink/contracts/src/v0.6/ChainlinkClient.sol";
-//import "@openzeppelin/contracts/access/Ownable.sol";
+import "@chainlink/contracts/src/v0.6/ChainlinkClient.sol";
+import "@chainlink/contracts/src/v0.6/vendor/Ownable.sol";
 
-import "https://github.com/smartcontractkit/chainlink/contracts/src/v0.6/ChainlinkClient.sol";
-import "https://github.com/smartcontractkit/chainlink/contracts/src/v0.6/vendor/Ownable.sol";
 
 contract WildfireInsurance is ChainlinkClient, Ownable {
-
+    //LOGS
+    event buyPolicyEvent(address _policyAddress, uint256 _productId, string _iplCoordinates);
+    event tryClaimLog(address _policyAddress);
+    event claimPolicySuccessful(address _policyAddress);
+    event claimPolicyUnsuccessful(address _policyAddress);
     //CONFIG: Network
     /////////////////
    
@@ -32,10 +34,10 @@ contract WildfireInsurance is ChainlinkClient, Ownable {
         oracle_address = _oracle; 
     }
     
-    uint256 private constant ORACLE_PAYMENT = 0.1 * 10 ** 18;
+    uint256 private constant ORACLE_PAYMENT = 0.01 * 10 ** 18;
     uint256 private CONTRACT_NETWORK = 42;
-    address public oracle_address = address(0x270C24d79A8c334240b3449B8431DaCA1972F438);
-    string public oracle_jobid = "0813e7cccc164e699961dd15eea486b3";
+    address public oracle_address = address(0x802C3F91274823128DBC1117e8961e452312842E);
+    string public oracle_jobid = "7fff08ea30ac42feae3a3bfdd4cac6c5";
 
     // Insurance Structures
     ///////////////////////
@@ -53,9 +55,9 @@ contract WildfireInsurance is ChainlinkClient, Ownable {
         address payable masterAddress;
         address payable policyAddress;
         uint256 productId;
-        string iplCoordinates;
+        string iplCoordinates;          //need to be GepJSON
         uint256 payableAmount;
-        uint256 payed;
+        bool payed;
         bytes32 payedFireId;
     }
     
@@ -73,8 +75,8 @@ contract WildfireInsurance is ChainlinkClient, Ownable {
         products[0] = product(0,100,2);
         products[1] = product(1,500,5);
         products[2] = product(2,1000,10);
-        oracle_address =  0x270C24d79A8c334240b3449B8431DaCA1972F438;
-        oracle_jobid = "6701dabd9cd14898aa132d20dbe8a14a";
+        // oracle_address =  0x270C24d79A8c334240b3449B8431DaCA1972F438;
+        // oracle_jobid = "6701dabd9cd14898aa132d20dbe8a14a";
     }
    
    
@@ -84,15 +86,18 @@ contract WildfireInsurance is ChainlinkClient, Ownable {
     function buyPolicy(address payable _policyAddress, uint256 _productId, string memory _iplCoordinates) 
     public payable
     {
-        require(msg.value > 0, "No value policy purchase");
+        require(msg.value >= 0.001*10**18, "Less than minimum 0.01 Eth");
         require(msg.value >= products[_productId].price, "Insufficient tx value for policy purchase");
         
         uint256 payableAmount = msg.value * products[_productId].payoutMultiplier;
         liquidityPool += uint256(msg.value);      
         
-        policy memory ipl = policy(msg.sender, _policyAddress, _productId, _iplCoordinates, payableAmount, 0, 0);
+        policy memory ipl = policy(msg.sender, _policyAddress, _productId, _iplCoordinates, payableAmount, false, 0);
         policies[msg.sender][_policyAddress] = ipl;
         policyIndex[msg.sender].push(_policyAddress);
+
+        //LOG event
+        emit buyPolicyEvent(_policyAddress, _productId, _iplCoordinates);
     }
     
     function viewPolicy(address _policyAddress) 
@@ -115,22 +120,33 @@ contract WildfireInsurance is ChainlinkClient, Ownable {
         policy memory ipl = policies[msg.sender][_policyAddress];
 
         if (ipl.masterAddress != address(0)){
-            Chainlink.Request memory req = buildChainlinkRequest(stringToBytes32(oracle_jobid), address(this), this.fulfillClaimInquiry.selector);
-            req.add("get", ipl.iplCoordinates);
-            bytes32 reqId = sendChainlinkRequestTo(oracle_address, req, 1000000000000000000);
-            claims[reqId] = ipl;
+            if(ipl.payed != true){
+                require(ipl.payableAmount <= address(this).balance, "Not enough liquidity!");
+                Chainlink.Request memory req = buildChainlinkRequest(stringToBytes32(oracle_jobid), address(this), this.fulfillClaimInquiry.selector);
+                req.add("body", ipl.iplCoordinates);
+                req.add("path", "inside");
+                bytes32 reqId = sendChainlinkRequestTo(oracle_address, req, ORACLE_PAYMENT);
+                claims[reqId] = ipl;
+            }
         }
+        emit tryClaimLog(_policyAddress);
     }
 
-    function fulfillClaimInquiry(bytes32 _requestId, bytes32 _data) public recordChainlinkFulfillment(_requestId)
+    function fulfillClaimInquiry(bytes32 _requestId, bool _data) public recordChainlinkFulfillment(_requestId)
     {
-    //fire = _data;
-        if (_data != 0){
+        policy memory pol = claims[_requestId];
+
+        if (_data == true){
             //Fire Found - Update policy and pay out
-            policy memory pol = claims[_requestId];
-            policies[pol.masterAddress][pol.policyAddress].payed = 1;
-            policies[pol.masterAddress][pol.policyAddress].payedFireId = _data;
+            //policy memory pol = claims[_requestId];
+            policies[pol.masterAddress][pol.policyAddress].payed = true;
+            //policies[pol.masterAddress][pol.policyAddress].payedFireId = _data;
+            require(pol.payableAmount <= address(this).balance, "Not enough liquidity!");
             pol.policyAddress.transfer(pol.payableAmount);
+            //TODO reset user data
+            emit claimPolicySuccessful(pol.policyAddress);
+        } else {
+            emit claimPolicyUnsuccessful(pol.policyAddress);
         }
     }
     
